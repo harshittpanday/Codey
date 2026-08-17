@@ -21,3 +21,15 @@ def test_scanner_ignores_generated_directories(tmp_path: Path) -> None:
     paths = discover_files(tmp_path)
     relative = {p.relative_to(tmp_path).as_posix() for p in paths}
     assert relative == {"src/main.py"}
+
+
+def test_gitignore_matcher_works_with_current_parser_api(tmp_path):
+    from codey.scanner import build_gitignore_matcher
+
+    (tmp_path / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")
+    (tmp_path / "ignored_dir").mkdir()
+    matcher = build_gitignore_matcher(tmp_path)
+
+    assert matcher(tmp_path / "ignored.txt") is True
+    assert matcher(tmp_path / "ignored_dir") is True
+    assert matcher(tmp_path / "kept.txt") is False

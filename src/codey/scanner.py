@@ -98,7 +98,7 @@ def build_gitignore_matcher(root: Path):
     gitignore = root / ".gitignore"
     if not gitignore.exists():
         return lambda _: False
-    return parse_gitignore(str(gitignore), root_directory=str(root))
+    return parse_gitignore(str(gitignore), base_dir=str(root))
 
 
 def discover_files(root: Path) -> list[Path]:

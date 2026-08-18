@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .ai import OllamaClient, OllamaError
 from .config import CodeYConfig
 from .database import Database
 from .git import discover_repository
@@ -45,6 +46,23 @@ def index(path: Path = typer.Argument(..., exists=True, file_okay=False, dir_oka
     console.print(f"[green]✓[/green] {result.symbols} symbols discovered")
     console.print(f"[green]✓[/green] {result.commits} commits analyzed")
     console.print("\n[bold green]Index complete.[/bold green]")
+
+
+@app.command()
+def ask(
+    prompt: str = typer.Argument(..., help="Question or instruction for the local model."),
+) -> None:
+    """Ask the configured local Ollama model a question."""
+    try:
+        client = OllamaClient.from_environment()
+        console.print(f"[dim]Model: {client.model}[/dim]\n")
+        console.print(client.ask(prompt))
+    except ValueError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except OllamaError as exc:
+        console.print(f"[red]✗ AI request failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()

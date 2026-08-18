@@ -68,3 +68,14 @@ The first parser adapters cover Python, JavaScript, TypeScript/TSX, Java, Go, an
 ## Re-indexing
 
 Running `codey index .` again upserts current file metadata, removes deleted files, replaces their symbol records, and refreshes the Git history. This is intentionally simple and reliable for MVP 1; more granular incremental indexing can come later.
+
+
+## Local AI
+
+CodeY can now send a prompt to a locally running Ollama model. The default model is `qwen2.5-coder:3b`.
+
+```text
+codey ask "What is a Python function?"
+```
+
+Configure the local endpoint or model with `CODEY_OLLAMA_URL` and `CODEY_MODEL`. No API key or cloud service is required.

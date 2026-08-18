@@ -79,3 +79,17 @@ codey ask "What is a Python function?"
 ```
 
 Configure the local endpoint or model with `CODEY_OLLAMA_URL` and `CODEY_MODEL`. No API key or cloud service is required.
+
+## Project Context
+
+CodeY can now use its local index to retrieve relevant source files before asking the local Ollama model a question.
+
+```text
+codey ask "Where is the portfolio timeline implemented?" --path "C:\\path\\to\\repository"
+```
+
+The current retrieval layer uses deterministic file-path and source-content matching. Embeddings and vector databases are intentionally not part of this stage.
+
+### Smarter local retrieval
+
+`codey ask` now ranks filenames, paths, and indexed symbols ahead of broad content matches, filters common dependency/build artifacts, and bounds the source context sent to Ollama. This keeps local models focused on the most relevant project code instead of consuming large amounts of noisy context.

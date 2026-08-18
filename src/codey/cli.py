@@ -8,6 +8,7 @@ from rich.table import Table
 
 from .ai import OllamaClient, OllamaError
 from .config import CodeYConfig
+from .context import build_context
 from .database import Database
 from .git import discover_repository
 from .indexer import index_repository
@@ -51,12 +52,48 @@ def index(path: Path = typer.Argument(..., exists=True, file_okay=False, dir_oka
 @app.command()
 def ask(
     prompt: str = typer.Argument(..., help="Question or instruction for the local model."),
+    path: Path = typer.Option(
+        Path("."), "--path", "-p", exists=True, file_okay=False, dir_okay=True,
+        help="Repository to ask questions about.",
+    ),
 ) -> None:
-    """Ask the configured local Ollama model a question."""
+    """Ask the local model about an indexed repository."""
+    repository_root = path.resolve()
+    config = CodeYConfig.for_repository(repository_root)
+
+    if not config.database_path.exists():
+        console.print(
+            "[red]✗ No CodeY index found.[/red]\n"
+            f"Run: codey index {repository_root}"
+        )
+        raise typer.Exit(code=2)
+
     try:
-        client = OllamaClient.from_environment()
-        console.print(f"[dim]Model: {client.model}[/dim]\n")
-        console.print(client.ask(prompt))
+        with Database(config.database_path) as database:
+            context, results = build_context(database, repository_root, prompt)
+            if not results:
+                console.print("[yellow]No relevant project files found.[/yellow]")
+                raise typer.Exit(code=1)
+
+            console.print("[dim]Relevant files:[/dim]")
+            for result in results:
+                console.print(f"  [cyan]{result.path}[/cyan] [dim]({result.reason})[/dim]")
+            console.print()
+
+            client = OllamaClient.from_environment()
+            system_prompt = (
+                "You are CodeY, a local software project understanding assistant. "
+                "Answer questions using the supplied project context. Do not invent "
+                "files, functions, or architecture. If the context is insufficient, "
+                "say so clearly."
+            )
+            model_prompt = (
+                f"{system_prompt}\n\nPROJECT CONTEXT:\n{context}\n\n"
+                f"USER QUESTION:\n{prompt}"
+            )
+            console.print(f"[dim]Model: {client.model}[/dim]\n")
+            console.print(client.ask(model_prompt))
+
     except ValueError as exc:
         console.print(f"[red]✗ {exc}[/red]")
         raise typer.Exit(code=2) from exc

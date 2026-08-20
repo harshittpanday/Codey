@@ -1,65 +1,18 @@
 from __future__ import annotations
-
-import json
-import os
 from dataclasses import dataclass
-from urllib import error, request
-
-
-class OllamaError(RuntimeError):
-    """Raised when CodeY cannot communicate with the local Ollama server."""
-
-
+import httpx
+class OllamaError(RuntimeError):pass
 @dataclass(frozen=True)
 class OllamaClient:
-    base_url: str = "http://127.0.0.1:11434"
-    model: str = "qwen2.5-coder:3b"
-    timeout: float = 120.0
-
-    @classmethod
-    def from_environment(cls) -> "OllamaClient":
-        return cls(
-            base_url=os.getenv("CODEY_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
-            model=os.getenv("CODEY_MODEL", "qwen2.5-coder:3b"),
-        )
-
-    def ask(self, prompt: str) -> str:
-        if not prompt.strip():
-            raise ValueError("Prompt cannot be empty.")
-
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-        }
-        body = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            f"{self.base_url}/api/chat",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
+    base_url:str;model:str;timeout:float
+    def ask(self,prompt:str)->str:
+        if not prompt.strip():raise ValueError("Prompt cannot be empty.")
         try:
-            with request.urlopen(req, timeout=self.timeout) as response:
-                raw = response.read()
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-            raise OllamaError(f"Ollama returned HTTP {exc.code}: {detail or exc.reason}") from exc
-        except error.URLError as exc:
-            raise OllamaError(
-                "Could not connect to Ollama at "
-                f"{self.base_url}. Make sure Ollama is running."
-            ) from exc
-        except TimeoutError as exc:
-            raise OllamaError("The Ollama request timed out.") from exc
-
-        try:
-            result = json.loads(raw)
-            content = result["message"]["content"]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise OllamaError("Ollama returned an invalid response.") from exc
-
-        if not isinstance(content, str) or not content.strip():
-            raise OllamaError("Ollama returned an empty response.")
-        return content.strip()
+            with httpx.Client(timeout=self.timeout) as client:r=client.post(f"{self.base_url}/api/generate",json={"model":self.model,"prompt":prompt,"stream":False,"options":{"temperature":0.1}});r.raise_for_status()
+        except httpx.ConnectError as e:raise OllamaError(f"Could not connect to Ollama at {self.base_url}. Make sure Ollama is running.") from e
+        except httpx.TimeoutException as e:raise OllamaError(f"The Ollama request timed out after {self.timeout:g}s. Try a smaller context budget or increase CODEY_OLLAMA_TIMEOUT.") from e
+        except httpx.HTTPStatusError as e:raise OllamaError(f"Ollama returned HTTP {e.response.status_code}: {e.response.text[:500]}") from e
+        except httpx.HTTPError as e:raise OllamaError(f"Ollama request failed: {e}") from e
+        answer=r.json().get("response")
+        if not isinstance(answer,str) or not answer.strip():raise OllamaError("Ollama returned an empty response.")
+        return answer.strip()

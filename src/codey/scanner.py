@@ -1,145 +1,43 @@
 from __future__ import annotations
-
-import hashlib
-import os
-from datetime import datetime, timezone
+import hashlib, os
 from pathlib import Path
+from gitignore_parser import parse_gitignore
+from .models import FileRecord, relative_path
+MAX_FILE_SIZE=2*1024*1024
+COMMON_IGNORED_DIRS={".git",".codey",".venv","venv","node_modules","__pycache__",".pytest_cache",".mypy_cache",".ruff_cache","dist","build",".next",".nuxt",".turbo","coverage","target",".idea",".vscode"}
+LANGUAGES={".py":"Python",".js":"JavaScript",".jsx":"JavaScript",".ts":"TypeScript",".tsx":"TypeScript",".java":"Java",".go":"Go",".rs":"Rust",".md":"Markdown",".json":"JSON",".css":"CSS",".html":"HTML",".htm":"HTML",".toml":"TOML",".yaml":"YAML",".yml":"YAML",".xml":"XML",".sql":"SQL",".sh":"Shell",".ps1":"PowerShell"}
 
-from gitignore_parser import parse_gitignore  # type: ignore[import-not-found]
+def sha256_file(path:Path)->str:
+    h=hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda:f.read(1024*1024),b""): h.update(chunk)
+    return h.hexdigest()
 
-from .models import FileRecord
-
-# Intentionally conservative. These are directories that are almost never useful
-# for project understanding and can contain enormous generated trees.
-IGNORED_DIR_NAMES = {
-    ".git",
-    ".codey",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "venv",
-    "env",
-    "dist",
-    "build",
-    "coverage",
-    ".next",
-    ".turbo",
-    "target",
-    "out",
-    "vendor",
-}
-
-LANGUAGES = {
-    ".py": "Python",
-    ".js": "JavaScript",
-    ".jsx": "JavaScript",
-    ".mjs": "JavaScript",
-    ".cjs": "JavaScript",
-    ".ts": "TypeScript",
-    ".tsx": "TypeScript",
-    ".java": "Java",
-    ".go": "Go",
-    ".rs": "Rust",
-    ".c": "C",
-    ".h": "C/C++",
-    ".cpp": "C++",
-    ".cc": "C++",
-    ".hpp": "C++",
-    ".cs": "C#",
-    ".rb": "Ruby",
-    ".php": "PHP",
-    ".swift": "Swift",
-    ".kt": "Kotlin",
-    ".kts": "Kotlin",
-    ".md": "Markdown",
-    ".mdx": "MDX",
-    ".json": "JSON",
-    ".yaml": "YAML",
-    ".yml": "YAML",
-    ".toml": "TOML",
-    ".xml": "XML",
-    ".css": "CSS",
-    ".scss": "SCSS",
-    ".html": "HTML",
-    ".sql": "SQL",
-    ".sh": "Shell",
-    ".ps1": "PowerShell",
-}
-
-MAX_FILE_SIZE = 2 * 1024 * 1024
-BINARY_SAMPLE_SIZE = 8192
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def is_binary(path: Path) -> bool:
+def is_binary(path:Path)->bool:
     try:
-        sample = path.read_bytes()[:BINARY_SAMPLE_SIZE]
-    except OSError:
-        return True
-    return b"\x00" in sample
+        with path.open("rb") as f: sample=f.read(8192)
+    except OSError: return True
+    return b"\0" in sample
 
+def language_for(path:Path)->str: return LANGUAGES.get(path.suffix.lower(),"Unknown")
 
-def language_for(path: Path) -> str:
-    return LANGUAGES.get(path.suffix.lower(), "Unknown")
+def build_gitignore(root:Path):
+    p=root/".gitignore"
+    return parse_gitignore(str(p),root) if p.is_file() else (lambda _:False)
 
-
-def build_gitignore_matcher(root: Path):
-    gitignore = root / ".gitignore"
-    if not gitignore.exists():
-        return lambda _: False
-    return parse_gitignore(str(gitignore), base_dir=str(root))
-
-
-def discover_files(root: Path) -> list[Path]:
-    matcher = build_gitignore_matcher(root)
-    discovered: list[Path] = []
-
-    for current, dirnames, filenames in os.walk(root, topdown=True):
-        current_path = Path(current)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in IGNORED_DIR_NAMES
-            and not matcher(current_path / name)
-        ]
-
-        for filename in filenames:
-            path = current_path / filename
-            if matcher(path) or path.name == ".gitignore":
-                continue
+def discover_files(root:Path)->list[Path]:
+    root=root.resolve(); ignored=build_gitignore(root); out=[]
+    for current,dirs,names in os.walk(root):
+        cp=Path(current); dirs[:]=[d for d in dirs if d not in COMMON_IGNORED_DIRS and not ignored(cp/d)]
+        for name in names:
+            p=cp/name
             try:
-                if path.is_symlink() or not path.is_file():
-                    continue
-                if path.stat().st_size > MAX_FILE_SIZE or is_binary(path):
-                    continue
-            except OSError:
-                continue
-            discovered.append(path)
+                rel=relative_path(root,p)
+                if ignored(p) or rel.startswith(".git/") or rel.startswith(".codey/") or p.stat().st_size>MAX_FILE_SIZE or is_binary(p): continue
+                out.append(p)
+            except OSError: continue
+    return sorted(out)
 
-    return sorted(discovered)
-
-
-def make_file_record(path: Path, root: Path) -> FileRecord:
-    stat = path.stat()
-    modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return FileRecord(
-        path=path.relative_to(root).as_posix(),
-        extension=path.suffix.lower(),
-        language=language_for(path),
-        size_bytes=stat.st_size,
-        sha256=sha256_file(path),
-        line_count=0 if not text else text.count("\n") + 1,
-        modified_at=modified,
-    )
+def make_file_record(root:Path,path:Path)->FileRecord:
+    st=path.stat(); text=path.read_text(encoding="utf-8",errors="replace")
+    return FileRecord(relative_path(root,path),path.suffix.lower(),language_for(path),st.st_size,sha256_file(path),str(st.st_mtime_ns),text.count("\n")+(1 if text else 0))

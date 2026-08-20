@@ -1,95 +1,45 @@
 # CodeY
 
-CodeY is a local-first developer project memory and understanding tool. MVP 1 builds the foundation: repository files, Git history, and code structure are indexed into a local SQLite database.
-
-**MVP 1 intentionally has no AI, embeddings, RAG, web UI, cloud services, or autonomous coding features.**
-
-## Requirements
-
-- Python 3.13+
-- Git
-- [uv](https://docs.astral.sh/uv/)
+CodeY is a local-first developer tool for understanding codebases with local AI. It indexes files, code structure, and Git history into SQLite, retrieves focused context for a question, and sends only that context to a locally running Ollama model.
 
 ## Install
 
-```bash
+```powershell
 uv sync
-```
-
-For development:
-
-```bash
-uv sync --dev
-```
-
-## Run
-
-From a Git repository:
-
-```bash
-uv run codey index .
-uv run codey status
-uv run codey files
-uv run codey commits --limit 20
-uv run codey symbols
-uv run codey info
-```
-
-The local index is stored in `.codey/index.db`. `.codey` is ignored by CodeY itself so it does not index its own database.
-
-## Test
-
-```bash
 uv run pytest
 ```
 
-## MVP 1 architecture
+## Index
 
-```text
-CLI
- │
- ▼
-Indexer ──► Scanner ──► File metadata
- │
- ├───────► GitPython ──► Commit history
- │
- └───────► Tree-sitter ──► Symbols
- │
- ▼
-SQLite
+```powershell
+uv run codey index "C:\path\to\repo"
+uv run codey status
+uv run codey files
+uv run codey symbols
+uv run codey commits --limit 20
+uv run codey info
 ```
-
-The schema keeps repositories, files, symbols, commits, and changed files separate so later versions can add documentation, decisions, embeddings, and memory without rewriting the core index.
-
-## Supported structural parsing
-
-The first parser adapters cover Python, JavaScript, TypeScript/TSX, Java, Go, and Rust when their grammar packages are available. Other files are still indexed as files, but their code structure is not parsed.
-
-## Re-indexing
-
-Running `codey index .` again upserts current file metadata, removes deleted files, replaces their symbol records, and refreshes the Git history. This is intentionally simple and reliable for MVP 1; more granular incremental indexing can come later.
-
 
 ## Local AI
 
-CodeY can now send a prompt to a locally running Ollama model. The default model is `qwen2.5-coder:3b`.
+Install/run Ollama and have a model available, for example `qwen2.5-coder:3b`.
 
-```text
-codey ask "What is a Python function?"
+```powershell
+ollama list
+uv run codey ask "Where is authentication implemented?" --path "C:\path\to\repo"
+uv run codey ask "How does the database layer work?" --path "C:\path\to\repo" --debug
 ```
 
-Configure the local endpoint or model with `CODEY_OLLAMA_URL` and `CODEY_MODEL`. No API key or cloud service is required.
+Environment variables:
 
-## Project Context
+- `CODEY_MODEL` — default `qwen2.5-coder:3b`
+- `CODEY_OLLAMA_URL` — default `http://127.0.0.1:11434`
+- `CODEY_OLLAMA_TIMEOUT` — default `180` seconds
+- `CODEY_MAX_CONTEXT_CHARS` — default `10000`
+- `CODEY_MAX_FILES` — default `6`
 
-CodeY can now use its local index to retrieve relevant source files before asking the local Ollama model a question.
+The context budget is intentionally limited so a small local model does not receive an unnecessarily huge prompt.
 
-```text
-codey ask "Where is the portfolio timeline implemented?" --path "C:\\path\\to\\repository"
-```
+## Design boundary
 
-The current retrieval layer uses deterministic file-path and source-content matching. Embeddings and vector databases are intentionally not part of this stage.
-
-### Smarter local retrieval
-
-`codey ask` now ranks filenames, paths, and indexed symbols ahead of broad content matches, filters common dependency/build artifacts, and bounds the source context sent to Ollama. This keeps local models focused on the most relevant project code instead of consuming large amounts of noisy context.
+CodeY understands and explains an existing codebase. It does not autonomously modify files. The system is local/offline-first and has no required cloud AI API, web UI, authentication system, or hosted database.

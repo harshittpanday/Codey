@@ -1,150 +1,24 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-from pathlib import Path
-
 from tree_sitter import Language, Parser
-
+import tree_sitter_go as ts_go, tree_sitter_java as ts_java, tree_sitter_javascript as ts_js, tree_sitter_python as ts_python, tree_sitter_rust as ts_rust, tree_sitter_typescript as ts_ts
 from .models import SymbolRecord
-
-
 @dataclass(frozen=True)
-class Grammar:
-    language: str
-    grammar: Language
+class Grammar: language:str; language_obj:Language
+GRAMMARS={"Python":Grammar("Python",Language(ts_python.language())),"JavaScript":Grammar("JavaScript",Language(ts_js.language())),"TypeScript":Grammar("TypeScript",Language(ts_ts.language_typescript())),"Java":Grammar("Java",Language(ts_java.language())),"Go":Grammar("Go",Language(ts_go.language())),"Rust":Grammar("Rust",Language(ts_rust.language()))}
+KIND={"function_definition":"function","function_declaration":"function","method_definition":"method","method_declaration":"method","class_definition":"class","class_declaration":"class","interface_declaration":"interface","type_alias_declaration":"type_alias","type_declaration":"type","struct_item":"struct","enum_item":"enum","function_item":"function","impl_item":"impl"}
 
+def _name(n):
+    for f in ("name","field_identifier","property_identifier","type_identifier"):
+        c=n.child_by_field_name(f)
+        if c is not None:return c.text.decode("utf-8",errors="replace")
 
-def _load_grammars() -> dict[str, Grammar]:
-    grammars: dict[str, Grammar] = {}
-    try:
-        import tree_sitter_python as tspython
-        grammars["Python"] = Grammar("Python", Language(tspython.language()))
-    except ImportError:
-        pass
-    try:
-        import tree_sitter_javascript as tsjavascript
-        grammars["JavaScript"] = Grammar("JavaScript", Language(tsjavascript.language()))
-    except ImportError:
-        pass
-    try:
-        import tree_sitter_typescript as tstypescript
-        grammars["TypeScript"] = Grammar("TypeScript", Language(tstypescript.language_typescript()))
-        grammars["TSX"] = Grammar("TypeScript", Language(tstypescript.language_tsx()))
-    except ImportError:
-        pass
-    try:
-        import tree_sitter_java as tsjava
-        grammars["Java"] = Grammar("Java", Language(tsjava.language()))
-    except ImportError:
-        pass
-    try:
-        import tree_sitter_go as tsgo
-        grammars["Go"] = Grammar("Go", Language(tsgo.language()))
-    except ImportError:
-        pass
-    try:
-        import tree_sitter_rust as tsrust
-        grammars["Rust"] = Grammar("Rust", Language(tsrust.language()))
-    except ImportError:
-        pass
-    return grammars
-
-
-GRAMMARS = _load_grammars()
-
-NODE_TYPES: dict[str, tuple[str, ...]] = {
-    "Python": (
-        "function_definition",
-        "class_definition",
-    ),
-    "JavaScript": (
-        "function_declaration",
-        "generator_function_declaration",
-        "class_declaration",
-        "method_definition",
-        "lexical_declaration",
-        "variable_declaration",
-    ),
-    "TypeScript": (
-        "function_declaration",
-        "generator_function_declaration",
-        "class_declaration",
-        "method_definition",
-        "interface_declaration",
-        "type_alias_declaration",
-        "enum_declaration",
-    ),
-    "Java": (
-        "class_declaration",
-        "interface_declaration",
-        "method_declaration",
-        "constructor_declaration",
-        "enum_declaration",
-    ),
-    "Go": (
-        "function_declaration",
-        "method_declaration",
-        "type_declaration",
-    ),
-    "Rust": (
-        "function_item",
-        "struct_item",
-        "enum_item",
-        "trait_item",
-        "impl_item",
-        "type_item",
-    ),
-}
-
-IMPORT_TYPES = {
-    "import_statement",
-    "import_declaration",
-    "import_spec",
-    "import_clause",
-    "use_declaration",
-}
-EXPORT_TYPES = {
-    "export_statement",
-    "export_declaration",
-}
-
-
-def _node_name(node, source: bytes) -> str:
-    for field_name in ("name", "declarator"):
-        child = node.child_by_field_name(field_name)
-        if child is not None:
-            value = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-            if value:
-                return value.split("(", 1)[0].strip()
-    for child in node.children:
-        if child.type in {"identifier", "type_identifier", "property_identifier", "field_identifier"}:
-            return source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-    return node.type
-
-
-def parse_file(path: Path, language: str) -> list[SymbolRecord]:
-    grammar = GRAMMARS.get(language)
-    if grammar is None:
-        return []
-    source = path.read_bytes()
-    parser = Parser(grammar.grammar)
-    tree = parser.parse(source)
-    symbol_types = set(NODE_TYPES.get(language, ()))
-    results: list[SymbolRecord] = []
-
-    def visit(node) -> None:
-        if node.type in symbol_types:
-            results.append(
-                SymbolRecord(
-                    file_path=path.as_posix(),
-                    name=_node_name(node, source),
-                    symbol_type=node.type,
-                    start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1,
-                )
-            )
-        for child in node.children:
-            visit(child)
-
-    visit(tree.root_node)
-    return results
+def parse_file(path:str,language:str,text:str)->list[SymbolRecord]:
+    g=GRAMMARS.get(language)
+    if not g:return []
+    parser=Parser(g.language_obj); tree=parser.parse(text.encode("utf-8",errors="replace")); out=[]
+    def visit(n):
+        kind=KIND.get(n.type); name=_name(n) if kind else None
+        if kind and name: out.append(SymbolRecord(path,name,kind,n.start_point.row+1,n.end_point.row+1))
+        for child in n.children: visit(child)
+    visit(tree.root_node); return out

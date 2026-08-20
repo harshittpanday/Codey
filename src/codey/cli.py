@@ -1,186 +1,55 @@
-from __future__ import annotations
-
 from pathlib import Path
-
 import typer
 from rich.console import Console
 from rich.table import Table
-
-from .ai import OllamaClient, OllamaError
+from .ai import OllamaClient,OllamaError
 from .config import CodeYConfig
 from .context import build_context
 from .database import Database
-from .git import discover_repository
 from .indexer import index_repository
-
-app = typer.Typer(help="CodeY — local-first project understanding.", no_args_is_help=True)
-console = Console()
-
-
-def _root(path: Path) -> Path:
-    requested = path.expanduser().resolve()
-    return discover_repository(requested) or requested
-
-
-def _db(path: Path) -> Database:
-    return Database(CodeYConfig.for_repository(_root(path)).database_path)
-
-
+from .retrieval import retrieve
+app=typer.Typer(help="CodeY — local-first project understanding.");console=Console()
+def db(path):return Database(CodeYConfig.for_repository(path.resolve()).database)
 @app.command()
-def index(path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True, resolve_path=True)) -> None:
-    """Index a local repository or directory."""
-    console.print("[bold]CodeY[/bold]")
-    console.print("─" * 5)
-    console.print("Indexing repository...\n")
+def index(path:Path=typer.Argument(Path("."),exists=True,file_okay=False,dir_okay=True)):
     try:
-        result = index_repository(path)
-    except Exception as exc:
-        console.print(f"[red]✗ Indexing failed:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-
-    if result.git_available:
-        console.print("[green]✓[/green] Repository detected")
-    else:
-        console.print("[yellow]•[/yellow] Git repository not detected; file indexing only")
-    console.print(f"[green]✓[/green] {result.files_discovered} files discovered")
-    console.print(f"[green]✓[/green] {result.files_indexed} files indexed")
-    console.print(f"[green]✓[/green] {result.symbols} symbols discovered")
-    console.print(f"[green]✓[/green] {result.commits} commits analyzed")
-    console.print("\n[bold green]Index complete.[/bold green]")
-
-
+        console.print("[bold]CodeY[/bold]\n─────\nIndexing repository...\n");r=index_repository(path);console.print("✓ Repository detected" if r.git_available else "• Git repository not detected; file indexing only");console.print(f"✓ {r.files_discovered} files discovered\n✓ {r.files_indexed} files indexed\n✓ {r.symbols_discovered} symbols discovered\n✓ {r.commits_analyzed} commits analyzed\n\n[bold green]Index complete.[/bold green]")
+    except Exception as e:console.print(f"[red]✗ Indexing failed:[/red] {e}");raise typer.Exit(1) from e
 @app.command()
-def ask(
-    prompt: str = typer.Argument(..., help="Question or instruction for the local model."),
-    path: Path = typer.Option(
-        Path("."), "--path", "-p", exists=True, file_okay=False, dir_okay=True,
-        help="Repository to ask questions about.",
-    ),
-) -> None:
-    """Ask the local model about an indexed repository."""
-    repository_root = path.resolve()
-    config = CodeYConfig.for_repository(repository_root)
-
-    if not config.database_path.exists():
-        console.print(
-            "[red]✗ No CodeY index found.[/red]\n"
-            f"Run: codey index {repository_root}"
-        )
-        raise typer.Exit(code=2)
-
+def status(path:Path=typer.Argument(Path("."),exists=True,file_okay=False,dir_okay=True)):
+    p=CodeYConfig.for_repository(path.resolve()).database
+    if not p.exists():console.print("No index found. Run `codey index .` first.");raise typer.Exit(1)
+    with Database(p) as d:s=d.get_status()
+    r=s["repository"];console.print(f"Repository: {r['path']}\nFiles: {s['files']}\nSymbols: {s['symbols']}\nCommits: {s['commits']}\nGit: {'available' if r['git_available'] else 'not detected'}\nLast indexed: {r['last_indexed']}\n\nLanguages");[console.print(f"  {l}: {n}") for l,n in s['languages']]
+@app.command()
+def files(path:Path=typer.Argument(Path("."),exists=True,file_okay=False,dir_okay=True)):
+    with db(path) as d:rows=d.list_files()
+    t=Table();[t.add_column(c) for c in ("Path","Language","Lines","Size")];[t.add_row(r['path'],r['language'],str(r['lines']),f"{r['size']:,} B") for r in rows];console.print(t)
+@app.command()
+def commits(path:Path=typer.Argument(Path("."),exists=True,file_okay=False,dir_okay=True),limit:int=typer.Option(20,min=1,max=500)):
+    with db(path) as d:rows=d.list_commits(limit)
+    if not rows:console.print("No Git commits indexed.");return
+    t=Table();[t.add_column(c) for c in ("SHA","Author","Date","Message")];[t.add_row(r['sha'][:10],r['author'],r['timestamp'][:10],r['message']) for r in rows];console.print(t)
+@app.command()
+def symbols(path:Path=typer.Argument(Path("."),exists=True,file_okay=False,dir_okay=True)):
+    with db(path) as d:rows=d.list_symbols()
+    t=Table();[t.add_column(c) for c in ("Name","Type","File","Lines")];[t.add_row(r['name'],r['symbol_type'],r['file_path'],f"{r['start_line']}-{r['end_line']}") for r in rows];console.print(t)
+@app.command()
+def info(path:Path=typer.Argument(Path("."),exists=True,file_okay=False,dir_okay=True)):
+    root=path.resolve();c=CodeYConfig.for_repository(root);console.print(f"Path: {root}\nGit repository: {'yes' if (root/'.git').exists() else 'no'}\nCodeY database: {c.database}")
+@app.command()
+def ask(prompt:str=typer.Argument(...),path:Path=typer.Option(Path("."),"--path",exists=True,file_okay=False,dir_okay=True),debug:bool=typer.Option(False,"--debug")):
+    root=path.resolve();c=CodeYConfig.for_repository(root)
+    if not c.database.exists():console.print("[red]✗ No CodeY index found.[/red] Run `codey index .` first.");raise typer.Exit(2)
     try:
-        with Database(config.database_path) as database:
-            context, results = build_context(database, repository_root, prompt)
-            if not results:
-                console.print("[yellow]No relevant project files found.[/yellow]")
-                raise typer.Exit(code=1)
-
-            console.print("[dim]Relevant files:[/dim]")
-            for result in results:
-                console.print(f"  [cyan]{result.path}[/cyan] [dim]({result.reason})[/dim]")
-            console.print()
-
-            client = OllamaClient.from_environment()
-            system_prompt = (
-                "You are CodeY, a local software project understanding assistant. "
-                "Answer questions using the supplied project context. Do not invent "
-                "files, functions, or architecture. If the context is insufficient, "
-                "say so clearly."
-            )
-            model_prompt = (
-                f"{system_prompt}\n\nPROJECT CONTEXT:\n{context}\n\n"
-                f"USER QUESTION:\n{prompt}"
-            )
-            console.print(f"[dim]Model: {client.model}[/dim]\n")
-            console.print(client.ask(model_prompt))
-
-    except ValueError as exc:
-        console.print(f"[red]✗ {exc}[/red]")
-        raise typer.Exit(code=2) from exc
-    except OllamaError as exc:
-        console.print(f"[red]✗ AI request failed:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-
-
-@app.command()
-def status(path: Path = typer.Argument(Path("."), exists=True, file_okay=False, dir_okay=True)) -> None:
-    """Show the current local index status."""
-    try:
-        with _db(path) as db:
-            status_data = db.get_status()
-    except Exception as exc:
-        console.print(f"[red]No usable CodeY index:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-
-    repo = status_data["repository"]
-    if repo is None:
-        console.print("[yellow]No index found. Run `codey index .` first.[/yellow]")
-        raise typer.Exit(code=1)
-
-    console.print(f"[bold]Repository:[/bold] {repo['root_path']}")
-    console.print(f"[bold]Files:[/bold] {status_data['files']}")
-    console.print(f"[bold]Symbols:[/bold] {status_data['symbols']}")
-    console.print(f"[bold]Commits:[/bold] {status_data['commits']}")
-    console.print(f"[bold]Git:[/bold] {'available' if repo['git_available'] else 'not detected'}")
-    console.print(f"[bold]Last indexed:[/bold] {repo['indexed_at']}")
-    console.print("\n[bold]Languages[/bold]")
-    for language, count in status_data["languages"]:
-        console.print(f"  {language}: {count}")
-
-
-@app.command(name="files")
-def files(path: Path = typer.Argument(Path("."), exists=True, file_okay=False, dir_okay=True)) -> None:
-    """List indexed files."""
-    with _db(path) as db:
-        rows = db.list_files()
-    if not rows:
-        console.print("[yellow]No indexed files. Run `codey index .` first.[/yellow]")
-        return
-    table = Table("Path", "Language", "Lines", "Size")
-    for row in rows:
-        table.add_row(row["path"], row["language"], str(row["line_count"]), f"{row['size_bytes']:,} B")
-    console.print(table)
-
-
-@app.command()
-def commits(
-    path: Path = typer.Argument(Path("."), exists=True, file_okay=False, dir_okay=True),
-    limit: int = typer.Option(20, min=1, max=500, help="Number of commits to show."),
-) -> None:
-    """Show indexed Git commits."""
-    with _db(path) as db:
-        rows = db.list_commits(limit)
-    if not rows:
-        console.print("[yellow]No Git commits indexed.[/yellow]")
-        return
-    table = Table("SHA", "Author", "Date", "Message")
-    for row in rows:
-        table.add_row(row["sha"][:10], row["author_name"], row["timestamp"][:10], row["message"].splitlines()[0][:100])
-    console.print(table)
-
-
-@app.command()
-def symbols(path: Path = typer.Argument(Path("."), exists=True, file_okay=False, dir_okay=True)) -> None:
-    """Show discovered code symbols."""
-    with _db(path) as db:
-        rows = db.list_symbols()
-    if not rows:
-        console.print("[yellow]No symbols indexed or no supported source files found.[/yellow]")
-        return
-    table = Table("Name", "Type", "File", "Lines")
-    for row in rows:
-        table.add_row(row["name"], row["symbol_type"], row["file_path"], f"{row['start_line']}-{row['end_line']}")
-    console.print(table)
-
-
-@app.command()
-def info(path: Path = typer.Argument(Path("."), exists=True, file_okay=False, dir_okay=True)) -> None:
-    """Show repository and CodeY index information."""
-    root = _root(path)
-    console.print(f"[bold]Path:[/bold] {root}")
-    console.print(f"[bold]Git repository:[/bold] {'yes' if discover_repository(root) else 'no'}")
-    console.print(f"[bold]CodeY database:[/bold] {CodeYConfig.for_repository(root).database_path}")
-
-
-if __name__ == "__main__":
-    app()
+        with Database(c.database) as d:results=retrieve(d,root,prompt,c.max_files)
+        ctx=build_context(results,c.max_context_chars)
+        console.print("Relevant files:");[console.print(f"  {x.path} (score={x.score:.1f}; {'+'.join(x.reasons)})") for x in results]
+        if not results:console.print("[yellow]No relevant files found.[/yellow]");return
+        full=f"You are CodeY, a local codebase understanding tool. Answer only from the supplied repository context. Do not invent files, APIs, architecture, or history. If context is insufficient, say so. Mention exact file paths when useful.\n\nQuestion:\n{prompt}\n\nRepository context:\n{ctx.text}"
+        if debug:console.print(f"\nAI pipeline debug\n  Retrieved files: {ctx.files}\n  Context characters: {ctx.characters:,}\n  Prompt characters: {len(full):,}\n  Approx. prompt tokens: {len(full)//4:,}\n  Context budget: {c.max_context_chars:,} chars\n  Timeout: {c.timeout:g}s")
+        console.print(f"\nModel: {c.model}\n");console.print(OllamaClient(c.ollama_url,c.model,c.timeout).ask(full))
+    except ValueError as e:console.print(f"[red]✗ {e}[/red]");raise typer.Exit(2) from e
+    except OllamaError as e:console.print(f"[red]✗ AI request failed:[/red] {e}");raise typer.Exit(1) from e
+    except Exception as e:console.print(f"[red]✗ CodeY failed:[/red] {e}");raise typer.Exit(1) from e
+if __name__=="__main__":app()

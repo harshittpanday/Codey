@@ -11,6 +11,11 @@ class Database:
     @property
     def conn(self): return self._conn
     def _initialize(self):
+        cursor=self.conn.cursor()
+        repo_cols={row["name"] for row in cursor.execute("PRAGMA table_info(repository)").fetchall()}
+        files_cols={row["name"] for row in cursor.execute("PRAGMA table_info(files)").fetchall()}
+        if (repo_cols and "path" not in repo_cols) or (files_cols and "size" not in files_cols):
+            self.conn.executescript("DROP TABLE IF EXISTS commit_files; DROP TABLE IF EXISTS commits; DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS repository;")
         self.conn.executescript("""PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS repository(id INTEGER PRIMARY KEY CHECK(id=1),path TEXT NOT NULL,git_available INTEGER NOT NULL,last_indexed TEXT NOT NULL); CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,extension TEXT NOT NULL,language TEXT NOT NULL,size INTEGER NOT NULL,sha256 TEXT NOT NULL,modified_at TEXT NOT NULL,lines INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS symbols(id INTEGER PRIMARY KEY,file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,name TEXT NOT NULL,symbol_type TEXT NOT NULL,start_line INTEGER NOT NULL,end_line INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path); CREATE TABLE IF NOT EXISTS commits(sha TEXT PRIMARY KEY,author TEXT NOT NULL,timestamp TEXT NOT NULL,message TEXT NOT NULL,parents TEXT NOT NULL); CREATE TABLE IF NOT EXISTS commit_files(commit_sha TEXT NOT NULL REFERENCES commits(sha) ON DELETE CASCADE,path TEXT NOT NULL,additions INTEGER NOT NULL,deletions INTEGER NOT NULL,PRIMARY KEY(commit_sha,path));""")
     def save_repository(self,path,git_available): self.conn.execute("INSERT INTO repository VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path,git_available=excluded.git_available,last_indexed=excluded.last_indexed",(str(path),int(git_available),utc_now()))
     def upsert_files(self,rs): self.conn.executemany("INSERT INTO files VALUES(?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET extension=excluded.extension,language=excluded.language,size=excluded.size,sha256=excluded.sha256,modified_at=excluded.modified_at,lines=excluded.lines",[(r.path,r.extension,r.language,r.size,r.sha256,r.modified_at,r.lines) for r in rs])

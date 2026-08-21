@@ -31,3 +31,16 @@ class Database:
     def list_symbols(self):return self.conn.execute("SELECT * FROM symbols ORDER BY file_path,start_line,name").fetchall()
     def all_files(self):return self.conn.execute("SELECT * FROM files ORDER BY path").fetchall()
     def symbols_for_file(self,path):return self.conn.execute("SELECT * FROM symbols WHERE file_path=? ORDER BY start_line",(path,)).fetchall()
+    def find_file(self,path:str):
+        row=self.conn.execute("SELECT * FROM files WHERE path=?",(path,)).fetchone()
+        if row:return row
+        norm=path.replace("\\","/").strip("./")
+        row=self.conn.execute("SELECT * FROM files WHERE path=?",(norm,)).fetchone()
+        if row:return row
+        rows=self.conn.execute("SELECT * FROM files WHERE path LIKE ? OR path LIKE ?",(f"%/{norm}",norm)).fetchall()
+        return rows[0] if len(rows)==1 else None
+    def find_symbols(self,name:str):
+        rows=self.conn.execute("SELECT * FROM symbols WHERE name=? ORDER BY file_path,start_line",(name,)).fetchall()
+        if not rows:rows=self.conn.execute("SELECT * FROM symbols WHERE LOWER(name)=LOWER(?) ORDER BY file_path,start_line",(name,)).fetchall()
+        return rows
+
